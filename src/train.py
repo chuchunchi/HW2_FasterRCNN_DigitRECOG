@@ -8,13 +8,16 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 from tqdm import tqdm
 import numpy as np
+import gc
+import shutil
+from collections import OrderedDict
 
 from main import DigitDataset, get_transforms, collate_fn
 from models import DigitDetector
-import gc
 
 def train_one_epoch(model, data_loader, optimizer, device, epoch, print_freq=100):
     metric_logger = MetricLogger()
+    model.train()
     
     for i, (images, targets) in enumerate(data_loader):
         # Move inputs to the device
@@ -35,6 +38,12 @@ def train_one_epoch(model, data_loader, optimizer, device, epoch, print_freq=100
         
         if i % print_freq == 0:
             print(f'Epoch: [{epoch}][{i}/{len(data_loader)}] {metric_logger}')
+            
+        # Clear memory
+        del images, targets, loss_dict, losses
+        if i % 10 == 0:  # Run garbage collection every 10 batches
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
     return metric_logger.meters['loss'].avg
 
@@ -47,11 +56,12 @@ def train(cfg, checkpoint_path=None):
         cfg: Configuration object
         checkpoint_path: Optional path to a checkpoint to resume training
     """
-
+    # Force garbage collection before starting
+    gc.collect()
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    print(device)
+    print(f"Using device: {device}")
+    
     # Create transforms
     train_transform = get_transforms(train=True)
     val_transform = get_transforms(train=False)
@@ -76,7 +86,7 @@ def train(cfg, checkpoint_path=None):
         shuffle=True,
         num_workers=cfg.num_workers,
         collate_fn=collate_fn,
-        persistent_workers=True
+        pin_memory=False  # Set to False to reduce memory usage
     )
     
     val_loader = DataLoader(
@@ -85,7 +95,7 @@ def train(cfg, checkpoint_path=None):
         shuffle=False,
         num_workers=cfg.num_workers,
         collate_fn=collate_fn,
-        persistent_workers=True
+        pin_memory=False  # Set to False to reduce memory usage
     )
     
     # Build model
@@ -144,10 +154,6 @@ def train(cfg, checkpoint_path=None):
             'val_loss': val_loss
         }
         
-        # Save the latest checkpoint
-        latest_path = os.path.join(cfg.output_dir, 'latest_checkpoint.pth')
-        torch.save(checkpoint, latest_path)
-        
         # Save the best model
         if val_loss < best_loss:
             best_loss = val_loss
@@ -158,7 +164,19 @@ def train(cfg, checkpoint_path=None):
         # Save epoch checkpoint
         epoch_path = os.path.join(cfg.output_dir, f'checkpoint_epoch_{epoch}.pth')
         torch.save(checkpoint, epoch_path)
+        
+        
+        # Always run garbage collection between epochs
         gc.collect()
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        # Clear references to possible memory leaks
+        del checkpoint
+        
+        # Break if out of memory issue is detected
+        if torch.cuda.is_available() and torch.cuda.memory_allocated() > 0.95 * torch.cuda.get_device_properties(0).total_memory:
+            print("Warning: GPU memory nearly exhausted, stopping training.")
+            break
     
     print("Training complete!")
 
@@ -173,7 +191,7 @@ def evaluate_loss(model, data_loader, device):
     metric_logger = MetricLogger()
     
     with torch.no_grad():
-        for images, targets in data_loader:
+        for i, (images, targets) in enumerate(data_loader):
             images = [img.to(device) for img in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
             
@@ -183,6 +201,12 @@ def evaluate_loss(model, data_loader, device):
             
             # Log metrics
             metric_logger.update(loss=losses.item(), **{k: v.item() for k, v in loss_dict.items()})
+            
+            # Clear memory
+            del images, targets, loss_dict, losses
+            if i % 1000 == 0:  # Run garbage collection periodically
+                gc.collect()
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
     # Restore original model mode
     if not was_training:

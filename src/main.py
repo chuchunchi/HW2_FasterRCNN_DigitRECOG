@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from pycocotools.coco import COCO
 from PIL import Image
 import torchvision.transforms as T
+import gc
 
 # Configuration
 class Config:
@@ -24,7 +25,6 @@ class Config:
     img_size = (512, 512)
     num_classes = 10  # (0-9)
     
-    
     # Faster R-CNN settings
     rpn_anchor_sizes = (32, 64, 128, 256, 512)
     rpn_aspect_ratios = (0.5, 1.0, 2.0)
@@ -37,7 +37,7 @@ class Config:
     
     # Training settings
     batch_size = 8
-    num_workers = 4
+    num_workers = 2
     learning_rate = 0.001
     weight_decay = 0.0001
     momentum = 0.9
@@ -45,8 +45,6 @@ class Config:
     
     # Output settings
     output_dir = 'outputs'
-    
-
 # Dataset class
 class DigitDataset(Dataset):
     """Dataset for digit detection and recognition."""
@@ -55,18 +53,10 @@ class DigitDataset(Dataset):
         self.transform = transform
         self.is_test = is_test
         
-        self.images = {}
         # Get all image files
         self.img_files = [f for f in os.listdir(img_dir) if f.endswith('.png')]
         self.img_dir = img_dir
         self.img_files.sort()
-
-        # print(f"loading {len(self.img_files)} images in {img_dir}")
-        # for image in self.img_files:
-        #     img_path = os.path.join(img_dir, image)
-        #     with open(img_path, 'rb') as f:
-        #         img = Image.open(f).convert('RGB')
-        #         self.images[image] = img.copy()
         
         # Initialize COCO API for annotations
         self.coco = None
@@ -126,9 +116,14 @@ class DigitDataset(Dataset):
     
     def __getitem__(self, idx):
         img_file = self.img_files[idx]
-        # img = self.images[img_file]
         img_path = os.path.join(self.img_dir, img_file)
-        img = Image.open(img_path).convert('RGB')
+        
+        # Open image and convert to RGB, making sure to close it after processing
+        with Image.open(img_path) as img:
+            img = img.convert('RGB')
+            # Apply transforms to a copy of the image
+            if self.transform is not None:
+                img_tensor = self.transform(img)
         
         # Get image id and annotations
         if self.coco is not None and img_file in self.file_to_id:
@@ -146,11 +141,7 @@ class DigitDataset(Dataset):
                 'iscrowd': torch.zeros(0, dtype=torch.int64)
             }
         
-        # Apply transforms
-        if self.transform is not None:
-            img = self.transform(img)
-        
-        return img, target
+        return img_tensor, target
 
 
 # Custom collate function for the DataLoader
@@ -168,7 +159,6 @@ def get_transforms(train=False):
     # Add data augmentation for training
     if train:
         transforms = [
-            # T.RandomHorizontalFlip(0.5),
             T.RandomRotation(10),
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         ] + transforms
@@ -215,6 +205,9 @@ if __name__ == '__main__':
     elif args.mode == 'eval':
         from evaluate import evaluate
         evaluate(Config, args.checkpoint, mode='val')
-    elif args.mode == 'test':
+    elif args.mode == 'inference':
         from evaluate import inference
         inference(Config, args.checkpoint)
+    
+    # Force garbage collection at the end
+    gc.collect()

@@ -8,6 +8,7 @@ from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 import numpy as np
+import gc
 
 
 def build_faster_rcnn_model(cfg):
@@ -103,6 +104,7 @@ class DigitDetector(nn.Module):
         labels = detections['labels'].cpu().numpy()
         scores = detections['scores'].cpu().numpy()
 
+        # Use a reasonable confidence threshold
         confident_indices = scores > 0.6
         if not any(confident_indices):
             return -1
@@ -125,20 +127,10 @@ class DigitDetector(nn.Module):
         y_threshold = avg_height * 0.3
 
 
-            
+
+
         # Filter digits that are within a reasonable vertical range
         aligned_indices = np.abs(y_centers - mean_y) <= y_threshold
-        
-        # If we've filtered out too many digits, it might indicate multiple numbers in the image
-        # In that case, we might need more sophisticated grouping
-        if sum(aligned_indices) < len(boxes) * 0.5:
-            
-            # Sort boxes by x position
-            x_centers = (boxes[:, 0] + boxes[:, 2]) / 2
-            sorted_indices = np.argsort(x_centers)
-            
-            # currently: take the largest cluster of horizontally adjacent boxes
-            # TODO: cluster?
         
         # Only keep digits that are vertically aligned
         boxes = boxes[aligned_indices]
@@ -159,10 +151,13 @@ class DigitDetector(nn.Module):
         number_str = ''.join(digits)
         
         try:
-            return int(number_str)
+            result = int(number_str)
+            return result
         except ValueError:
             return -1
-
+        finally:
+            # Explicitly clean up large arrays
+            del boxes, labels, scores, y_centers, heights, aligned_indices
     
     def detect_and_recognize(self, images):
         """
@@ -187,5 +182,9 @@ class DigitDetector(nn.Module):
             for detection in detections:
                 number = self.predict_number(detection)
                 numbers.append(number)
+                
+            # Force garbage collection after processing a batch
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
         return detections, numbers
