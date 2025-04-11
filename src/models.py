@@ -104,60 +104,105 @@ class DigitDetector(nn.Module):
         labels = detections['labels'].cpu().numpy()
         scores = detections['scores'].cpu().numpy()
 
-        # Use a reasonable confidence threshold
-        confident_indices = scores > 0.6
+        # Filter by confidence threshold
+        confidence_threshold = 0.7
+        confident_indices = scores > confidence_threshold
         if not any(confident_indices):
             return -1
-        else:
-            boxes = boxes[confident_indices]
-            labels = labels[confident_indices]
-            scores = scores[confident_indices]
-
-        # Calculate the vertical center of each box
-        y_centers = (boxes[:, 1] + boxes[:, 3]) / 2
         
-        # Calculate average y-center
-        mean_y = np.mean(y_centers)
+        boxes = boxes[confident_indices]
+        labels = labels[confident_indices]
+        scores = scores[confident_indices]
         
-        # Calculate height of each box
+        # If we only have one digit, return it directly
+        if len(boxes) == 1:
+            return int(labels[0])
+        
+        # Calculate centers of each box
+        centers = np.zeros((len(boxes), 2))
+        for i, box in enumerate(boxes):
+            centers[i] = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]
+        
+        # Calculate box dimensions
+        widths = boxes[:, 2] - boxes[:, 0]
         heights = boxes[:, 3] - boxes[:, 1]
+        avg_width = np.mean(widths)
         avg_height = np.mean(heights)
         
-        # threshold for vertical alignment
-        y_threshold = avg_height * 0.3
-
-
-
-
-        # Filter digits that are within a reasonable vertical range
-        aligned_indices = np.abs(y_centers - mean_y) <= y_threshold
+        # Determine if digits are arranged horizontally or vertically
+        x_span = np.max(centers[:, 0]) - np.min(centers[:, 0])
+        y_span = np.max(centers[:, 1]) - np.min(centers[:, 1])
         
-        # Only keep digits that are vertically aligned
-        boxes = boxes[aligned_indices]
-        labels = labels[aligned_indices]
+        # Analyze orientation: horizontal, vertical, or diagonal
+        is_horizontal = x_span > y_span
         
-        # If we have no digits left after filtering, return -1
-        if len(boxes) == 0:
-            return -1
+        # Calculate spacing threshold based on average size
+        spacing_threshold = max(avg_width, avg_height) * 1.5
         
-        # Sort remaining boxes from left to right
-        x_lefts = boxes[:, 0]  # Left edge
-        sorted_indices = np.argsort(x_lefts)
-
-        sorted_labels = labels[sorted_indices]
-    
-        # Combine digits to form the number
-        digits = [str(int(label)) for label in sorted_labels]
-        number_str = ''.join(digits)
+        # Cluster digits that belong to the same number
+        clusters = []
+        visited = set()
         
-        try:
-            result = int(number_str)
-            return result
-        except ValueError:
-            return -1
-        finally:
-            # Explicitly clean up large arrays
-            del boxes, labels, scores, y_centers, heights, aligned_indices
+        for i in range(len(boxes)):
+            if i in visited:
+                continue
+                
+            cluster = [i]
+            visited.add(i)
+            
+            # Find all connected digits
+            queue = [i]
+            while queue:
+                current = queue.pop(0)
+                
+                for j in range(len(boxes)):
+                    if j in visited:
+                        continue
+                    
+                    # Calculate distance between centers
+                    dist = np.linalg.norm(centers[current] - centers[j])
+                    
+                    if dist < spacing_threshold:
+                        cluster.append(j)
+                        visited.add(j)
+                        queue.append(j)
+            
+            clusters.append(cluster)
+        
+        # Process each cluster to form a number
+        result = -1
+        max_cluster_size = 0
+        
+        for cluster in clusters:
+            if len(cluster) > max_cluster_size:
+                max_cluster_size = len(cluster)
+                
+                # Get boxes and labels for this cluster
+                cluster_boxes = boxes[cluster]
+                cluster_labels = labels[cluster]
+                cluster_centers = centers[cluster]
+                
+                # Sort indices based on orientation
+                if is_horizontal:
+                    # Sort from left to right
+                    sorted_indices = np.argsort(cluster_centers[:, 0])
+                else:
+                    # Sort from top to bottom
+                    sorted_indices = np.argsort(cluster_centers[:, 1])
+                
+                # Sort labels
+                sorted_labels = cluster_labels[sorted_indices]
+                
+                # Combine digits to form the number
+                digits = [str(int(label)) for label in sorted_labels]
+                number_str = ''.join(digits)
+                
+                try:
+                    result = int(number_str)
+                except ValueError:
+                    result = -1
+        
+        return result
     
     def detect_and_recognize(self, images):
         """
