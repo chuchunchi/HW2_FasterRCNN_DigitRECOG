@@ -38,13 +38,17 @@ class Config:
     # Training settings
     batch_size = 8
     num_workers = 2
-    learning_rate = 0.001
+    learning_rate = 0.0001
     weight_decay = 0.0001
+    lr = "step"
+    optimizer = "SGD"
     momentum = 0.9
     num_epochs = 24
     
     # Output settings
     output_dir = 'outputs'
+
+
 # Dataset class
 class DigitDataset(Dataset):
     """Dataset for digit detection and recognition."""

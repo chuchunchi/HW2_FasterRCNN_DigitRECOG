@@ -15,7 +15,7 @@ from collections import OrderedDict
 from main import DigitDataset, get_transforms, collate_fn
 from models import DigitDetector
 
-def train_one_epoch(model, data_loader, optimizer, device, epoch, print_freq=100):
+def train_one_epoch_sgd(model, data_loader, optimizer, device, epoch, print_freq=100):
     metric_logger = MetricLogger()
     model.train()
     
@@ -47,6 +47,39 @@ def train_one_epoch(model, data_loader, optimizer, device, epoch, print_freq=100
     
     return metric_logger.meters['loss'].avg
 
+def train_one_epoch(model, data_loader, optimizer, lr_scheduler, device, epoch, print_freq=10):
+    """Train the model for one epoch."""
+    model.train()
+    metric_logger = MetricLogger()
+    
+    for i, (images, targets) in enumerate(data_loader):
+        # Move inputs to the device
+        images = [img.to(device) for img in images]
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        
+        # Forward pass
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        
+        # Backward pass and optimize
+        optimizer.zero_grad()
+        losses.backward()
+        
+        # Gradient clipping is often helpful with AdamW
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        optimizer.step()
+        
+        # Step the scheduler (for OneCycleLR)
+        lr_scheduler.step()
+        
+        # Log progress
+        metric_logger.update(loss=losses.item(), **{k: v.item() for k, v in loss_dict.items()})
+        
+        if i % print_freq == 0:
+            print(f'Epoch: [{epoch}][{i}/{len(data_loader)}] {metric_logger} LR: {optimizer.param_groups[0]["lr"]:.6f}')
+    
+    return metric_logger.meters['loss'].avg
 
 def train(cfg, checkpoint_path=None):
     """
@@ -104,19 +137,36 @@ def train(cfg, checkpoint_path=None):
     
     # Create optimizer
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.SGD(
-        params,
-        lr=cfg.learning_rate,
-        momentum=cfg.momentum,
-        weight_decay=cfg.weight_decay
-    )
-    
+    if cfg.optimizer == "SGD":
+        optimizer = optim.SGD(
+            params,
+            lr=cfg.learning_rate,
+            momentum=cfg.momentum,
+            weight_decay=cfg.weight_decay
+        )
+    elif cfg.optimizer == "Adam":
+        optimizer = torch.optim.AdamW(
+            params,
+            lr=cfg.learning_rate,
+            weight_decay=cfg.weight_decay  # AdamW applies proper weight decay
+        )
+        
     # Learning rate scheduler
-    lr_scheduler = optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=8,
-        gamma=0.1
-    )
+    if cfg.lr == "step":
+        lr_scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=8,
+            gamma=0.1
+        )
+    else:
+        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=cfg.learning_rate,
+            total_steps=cfg.num_epochs * len(train_loader),
+            pct_start=0.1,  # Spend 10% of training time warming up
+            anneal_strategy='cos',
+            div_factor=25.0   # Initial LR is max_lr/25
+        )
     
     # Load checkpoint if provided
     start_epoch = 0
@@ -135,7 +185,10 @@ def train(cfg, checkpoint_path=None):
     print(f"Starting training for {num_epochs} epochs...")
     for epoch in range(start_epoch, num_epochs):
         # Train for one epoch
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, epoch)
+        if cfg.optimizer == "SGD":
+            train_loss = train_one_epoch_sgd(model, train_loader, optimizer, device, epoch)
+        else:
+            train_loss = train_one_epoch(model, train_loader, optimizer, lr_scheduler, device, epoch)
         
         # Update learning rate
         lr_scheduler.step()
