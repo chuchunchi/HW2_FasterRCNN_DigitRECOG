@@ -42,10 +42,12 @@ digit-recognition/
 │   ├── train.json              # Training annotations (COCO format)
 │   └── valid.json              # Validation annotations (COCO format)
 │
-├── main.py                     # Main entry point with configuration, dataset, and utilities
-├── models.py                   # Model architecture definition (Faster R-CNN)
-├── train.py                    # Training functionality
-├── evaluate.py                 # Evaluation and inference code
+├── src/
+│   ├── main.py                 # Main entry point with configuration, dataset, and utilities
+│   ├── models.py               # Model architecture definition (Faster R-CNN)
+│   ├── train.py                # Training functionality
+│   └── evaluate.py             # Evaluation and inference code
+│
 ├── outputs/                    # Output directory for model checkpoints and results
 │   ├── best_model.pth          # Best model checkpoint
 │   ├── latest_checkpoint.pth   # Latest model checkpoint
